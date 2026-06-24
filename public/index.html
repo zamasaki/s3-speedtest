@@ -162,6 +162,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
 
   <!-- Config -->
   <div class="panel">
+    <div class="pt">S3 Endpoint</div>
+    <div class="ci" style="margin-bottom:16px">
+      <select id="sel-endpoint" onchange="onEndpointChange()"></select>
+    </div>
+
     <div class="pt">Kích thước object</div>
     <div class="sg">
       <div class="sb" data-mb="1"   onclick="pickSize(this)">1 MB</div>
@@ -275,7 +280,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
     </div>
     <table>
       <thead><tr>
-        <th>#</th><th>Size</th><th>Mode</th><th>UL Luồng</th>
+        <th>#</th><th>Endpoint</th><th>Size</th><th>Mode</th><th>UL Luồng</th>
         <th style="text-align:right">Upload ↑</th>
         <th style="text-align:right">Download ↓</th>
         <th style="text-align:right">Latency</th>
@@ -292,6 +297,8 @@ let selMb   = 5;
 let mode    = 'multi';
 let running = false;
 let corsOk  = false;
+let endpoints = [];
+let currentEndpoint = null;
 const rows  = [];
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
@@ -331,6 +338,33 @@ function resetUI() {
   $('parts-grid').innerHTML='';
 }
 
+// ─── Endpoints ──────────────────────────────────────────────────────────────
+async function loadEndpoints() {
+  try {
+    const r = await fetch('/api/endpoints');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    endpoints = await r.json();
+    if (!endpoints.length) throw new Error('Không có endpoint nào được cấu hình');
+
+    const sel = $('sel-endpoint');
+    sel.innerHTML = endpoints.map(p =>
+      `<option value="${p.id}">${p.label} — ${p.bucket}</option>`
+    ).join('');
+    currentEndpoint = endpoints[0].id;
+    log(`Tải ${endpoints.length} endpoint: ${endpoints.map(p=>p.label).join(', ')}`, 'info');
+  } catch (e) {
+    log('⚠️ Không tải được danh sách endpoint: ' + e.message, 'err');
+    $('sel-endpoint').innerHTML = '<option>— Lỗi tải endpoint —</option>';
+  }
+}
+
+function onEndpointChange() {
+  currentEndpoint = $('sel-endpoint').value;
+  const p = endpoints.find(e => e.id === currentEndpoint);
+  log(`Đổi endpoint → ${p ? p.label : currentEndpoint}`, 'info');
+  probeS3Cors();
+}
+
 // ─── Config ───────────────────────────────────────────────────────────────────
 function pickSize(el) {
   document.querySelectorAll('.sb').forEach(b=>b.classList.remove('on'));
@@ -361,7 +395,7 @@ async function probeS3Cors() {
 
   try {
     // Lấy presigned URL thật
-    const r = await fetch('/api/presign/single');
+    const r = await fetch('/api/presign/single?endpoint=' + encodeURIComponent(currentEndpoint));
     if (!r.ok) throw new Error('Backend API lỗi: '+r.status);
     const { key, uploadUrl, downloadUrl } = await r.json();
 
@@ -442,7 +476,7 @@ async function doLatency() {
 // ─── Single PUT — browser PUT trực tiếp đến S3 ───────────────────────────────
 async function doSingleUpload(sizeMb) {
   log(`Lấy presigned URL (${sizeMb} MB)…`,'info');
-  const r = await fetch('/api/presign/single');
+  const r = await fetch('/api/presign/single?endpoint=' + encodeURIComponent(currentEndpoint));
   if (!r.ok) throw new Error('Presign thất bại: '+r.status);
   const { key, uploadUrl, downloadUrl } = await r.json();
 
@@ -496,7 +530,7 @@ async function doMultipartUpload(sizeMb, concur, partSizeMb) {
 
   const r = await fetch('/api/presign/multipart/init', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ partCount }),
+    body: JSON.stringify({ partCount, endpoint: currentEndpoint }),
   });
   if (!r.ok) throw new Error('Init thất bại: '+r.status);
   const { key, uploadId, partUrls, downloadUrl } = await r.json();
@@ -581,7 +615,7 @@ async function doMultipartUpload(sizeMb, concur, partSizeMb) {
             if (pst) pst.textContent='✗';
             await fetch('/api/presign/multipart/abort',{
               method:'POST',headers:{'Content-Type':'application/json'},
-              body:JSON.stringify({key,uploadId}),
+              body:JSON.stringify({key,uploadId,endpoint:currentEndpoint}),
             }).catch(()=>{});
             throw new Error(`Part ${i+1} thất bại: ${e.message}`);
           }
@@ -601,7 +635,7 @@ async function doMultipartUpload(sizeMb, concur, partSizeMb) {
   log(`Complete multipart (${completed.length} parts)…`,'info');
   const cr = await fetch('/api/presign/multipart/complete',{
     method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({key,uploadId,parts:completed}),
+    body:JSON.stringify({key,uploadId,parts:completed,endpoint:currentEndpoint}),
   });
   if (!cr.ok) throw new Error('Complete thất bại: '+(await cr.text()).slice(0,100));
   const { downloadUrl: dlUrl } = await cr.json();
@@ -732,6 +766,10 @@ async function doDownload(downloadUrl, sizeMb, dlConcur) {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 async function run() {
   if (running) return;
+  if (!currentEndpoint) {
+    alert('Chưa chọn được S3 Endpoint. Vui lòng kiểm tra lại cấu hình endpoints.json trên server.');
+    return;
+  }
   // Cảnh báo nếu CORS chưa OK nhưng vẫn cho thử
   if (!corsOk) {
     if (!confirm('⚠️ CORS chưa được xác nhận với S3.\nUpload/download trực tiếp có thể bị lỗi.\n\nVẫn tiếp tục?')) return;
@@ -783,7 +821,7 @@ async function run() {
       } finally {
         // Xóa file tạm trên S3 dù download thành công hay lỗi
         if (testKey) {
-          await fetch(`/api/object/${encodeURIComponent(testKey)}`, { method: 'DELETE' })
+          await fetch(`/api/object/${encodeURIComponent(testKey)}?endpoint=${encodeURIComponent(currentEndpoint)}`, { method: 'DELETE' })
             .then(r => r.ok ? log(`🗑 Đã xóa: ${testKey}`,'ok') : log(`⚠️ Xóa thất bại: ${testKey}`,'warn'))
             .catch(() => log(`⚠️ Không thể xóa: ${testKey}`,'warn'));
         }
@@ -797,8 +835,9 @@ async function run() {
     }
 
     const modeLabel = mode==='multi' ? `Multi ${concur}×${pSize}MB` : 'Single PUT';
+    const epLabel = endpoints.find(e=>e.id===currentEndpoint)?.label || currentEndpoint;
     iterRes.forEach(r => rows.push({
-      n:rows.length+1, size:selMb+' MB', mode:modeLabel,
+      n:rows.length+1, endpoint:epLabel, size:selMb+' MB', mode:modeLabel,
       concur: mode==='multi' ? concur : 1,
       up:r.upMbps.toFixed(2), dl:r.dlMbps.toFixed(2), lat:r.latency.toFixed(1),
     }));
@@ -826,7 +865,7 @@ function renderHist() {
   $('hist').classList.add('on');
   $('hist-body').innerHTML = rows.map(r=>`
     <tr>
-      <td>${r.n}</td><td>${r.size}</td><td>${r.mode}</td><td>${r.concur}</td>
+      <td>${r.n}</td><td>${r.endpoint||'—'}</td><td>${r.size}</td><td>${r.mode}</td><td>${r.concur}</td>
       <td class="r up">${r.up} Mbps</td>
       <td class="r dl">${r.dl} Mbps</td>
       <td class="r lat">${r.lat} ms</td>
@@ -839,8 +878,11 @@ function renderHist() {
 }
 
 // Init
-pickMode('multi');
-probeS3Cors();
+(async () => {
+  pickMode('multi');
+  await loadEndpoints();
+  probeS3Cors();
+})();
 </script>
 </body>
 </html>

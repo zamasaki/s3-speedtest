@@ -1,0 +1,20 @@
+[
+  {
+    "id": "longvan",
+    "label": "Long Van HCM5-R1",
+    "endpoint": "",
+    "region": "",
+    "bucket": "",
+    "accessKeyId": "",
+    "secretAccessKey": "
+  },
+  {
+    "id": "longvan-hn",
+    "label": "Long Van HN1-R1",
+    "endpoint": "",
+    "region": "",
+    "bucket": "",
+    "accessKeyId": "",
+    "secretAccessKey": ""
+  }
+]
