@@ -1,6 +1,6 @@
 node_modules/
 .env
-endpoints.json.example
+endpoints.json
 .next/
 dist/
 out/
